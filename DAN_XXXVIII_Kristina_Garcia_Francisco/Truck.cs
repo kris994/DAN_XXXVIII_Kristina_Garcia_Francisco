@@ -1,9 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace DAN_XXXVIII_Kristina_Garcia_Francisco
 {
@@ -22,15 +20,33 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
         /// </summary>
         private Dictionary<int, string> allLoadingTime = new Dictionary<int, string>();
         /// <summary>
-        /// Locks the trucks arrival
+        /// Locks the trucks loading to be one by one
+        /// </summary>
+        private readonly object lockLoading = new object();
+        /// <summary>
+        /// Locks the countdown
+        /// </summary>
+        private readonly object lockerCuntdown = new object();
+        /// <summary>
+        /// Locks the truck thread
         /// </summary>
         private readonly object lockTruck = new object();
         /// <summary>
         /// Barrier for checking if all 10 trucks finished loading
-        /// </summary>
+        /// </summary>     
         private Barrier loadingBarrier = new Barrier(10);
-        private EventWaitHandle waitTruck = new AutoResetEvent(false);
+        /// <summary>
+        /// Wait for a truck to get an arrival time so another can get it too
+        /// </summary>
         private EventWaitHandle waitArrivalTime = new AutoResetEvent(false);
+        /// <summary>
+        /// Loading countdown event for loading
+        /// </summary>
+        private CountdownEvent countdownLoading = new CountdownEvent(2);
+        /// <summary>
+        /// Loading countdown event for assigning routes
+        /// </summary>
+        private CountdownEvent countdownRoutes = new CountdownEvent(1);
         /// <summary>
         /// Generate random numbers when needed
         /// </summary>
@@ -40,13 +56,9 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
         /// </summary>
         private int enterCounter = 0;
         /// <summary>
-        /// Restarts the thread counts
+        /// Shows a whiteline in console and then it counts the number of routes
         /// </summary>
-        private int restartThreadCount = 0;
-        /// <summary>
-        /// Counts the amount of routes that were given to threads
-        /// </summary>
-        private int routeCounter = 0;
+        private int counter = 10;
         #endregion
 
         /// <summary>
@@ -67,37 +79,46 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
         {
             int waitTime;
 
-            // Amount fo threads that can enter the semaphore
-            MultipleThreads(2);
+            // Amount fo threads in countdown
+            MultipleThreads(countdownLoading);
 
             Console.WriteLine("Truck {0} started loading.", Thread.CurrentThread.Name);
+            lock (lockLoading)
+            {
+                enterCounter++;
+                waitTime = rng.Next(500, 5001);
 
-            // Threads trying to pass
-            waitTruck.WaitOne();           
-            waitTime = rng.Next(500, 5001);
-            allLoadingTime.Add(waitTime, Thread.CurrentThread.Name);
-            // Let the next thread in
-            waitTruck.Set();
-            Thread.Sleep(waitTime);
+                allLoadingTime.Add(waitTime, Thread.CurrentThread.Name);
+                Monitor.Wait(lockLoading, waitTime);
+            }
             // Write the time it took to load
             if (allLoadingTime.Any(tr => tr.Value.Equals(Thread.CurrentThread.Name)))
             {
                 Console.WriteLine("Truck {0} finished loading after {1} milliseconds."
                     , Thread.CurrentThread.Name, allLoadingTime.FirstOrDefault(x => x.Value == Thread.CurrentThread.Name).Key);
             }
-
-            // Let more threads enter the semaphore
-            restartThreadCount--;
-            if (restartThreadCount == 0)
+            
+            lock (lockTruck)
             {
-                enterCounter = 0;
+                enterCounter--;
+                if (enterCounter == 0)
+                {
+                    countdownLoading.Reset(2);                    
+                }
+            }
+
+            // Put a white line for console
+            lock (lockTruck)
+            {
+                counter--;
+                if (counter == 0)
+                {
+                    Console.WriteLine("\nDestination:");
+                }
             }
 
             // Wait all threads to finish loading
             loadingBarrier.SignalAndWait();
-
-            // Let first truck waiting for the route pass
-            waitTruck.Set();
         }
         #endregion
 
@@ -107,13 +128,13 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
         /// </summary>
         public void TruckRouting()
         {
-            // All trucks waiting for a route
-            waitTruck.WaitOne();
-            Console.WriteLine("\t\t\t\t\t\t\t\tTruck {0} received route {1}", Thread.CurrentThread.Name, Manager.truckRoutes[routeCounter]);
-            routeCounter++;
-            // Let the next truck pass
-            waitTruck.Set();
-            // Let the first truck that needs arrival time pass
+            // Amount fo threads in countdown
+            MultipleThreads(countdownRoutes);
+            Console.WriteLine("\t\t\t\t\t\t\t\tTruck {0} received route {1}", Thread.CurrentThread.Name, Manager.truckRoutes[counter]);
+            counter++;
+            countdownRoutes.Reset(1);
+
+            // Set the first truck on wait to pass
             waitArrivalTime.Set();
         }
         #endregion
@@ -152,10 +173,10 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
                 }
                 else
                 {
-                    int unloadingTime = allLoadingTime.FirstOrDefault(x => x.Value == Thread.CurrentThread.Name).Key;
+                    int unloadingTime = Convert.ToInt32(allLoadingTime.FirstOrDefault(x => x.Value == Thread.CurrentThread.Name).Key / 1.5);
                     Console.WriteLine("Truck {0} arrived, unloading time {1} milliseconds."
-                        , Thread.CurrentThread.Name, unloadingTime / 2);
-                    Monitor.Wait(lockTruck, unloadingTime / 2);
+                        , Thread.CurrentThread.Name, unloadingTime);
+                    Monitor.Wait(lockTruck, unloadingTime);
                     Console.WriteLine("\t\t\t\t\t\t\t\tTruck {0} successfully unloaded.", Thread.CurrentThread.Name);
                 }
             }
@@ -164,27 +185,24 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
 
         #region Manipulating truck threads
         /// <summary>
-        /// Only let a fixed amount of threads to enter
+        /// Only let a fixed amount of threads to enter with countdown
         /// </summary>
-        /// <param name="amount">the fixed amount</param>
-        public void MultipleThreads(int amount)
+        /// <param name="cd">the chosent countdown</param>
+        public void MultipleThreads(CountdownEvent cd)
         {
-            // Allow only 2 threads at the same time
+            // Countdown amount
             while (true)
             {
-                lock (lockTruck)
+                lock (lockerCuntdown)
                 {
-                    enterCounter++;
-
-                    if (enterCounter > amount)
+                    if (cd.CurrentCount == 0)
                     {
+                        cd.Wait();
                         Thread.Sleep(0);
                     }
                     else
                     {
-                        // Set for 1st thread to pass
-                        waitTruck.Set();
-                        restartThreadCount++;
+                        cd.Signal();                        
                         break;
                     }
                 }
