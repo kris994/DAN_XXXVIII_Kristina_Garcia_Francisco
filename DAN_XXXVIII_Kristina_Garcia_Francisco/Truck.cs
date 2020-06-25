@@ -105,11 +105,8 @@ namespace DAN_XXXVIII_Kristina_Garcia_Francisco
                 {
                     countdownLoading.Reset(2);                    
                 }
-            }
 
             // Put a white line for console
-            lock (lockTruck)
-            {
                 counter--;
                 if (counter == 0)
                 {
